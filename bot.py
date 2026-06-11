@@ -2,6 +2,7 @@ import os
 import json
 import re
 import tempfile
+import asyncio
 import genanki
 import random
 from groq import Groq
@@ -13,40 +14,60 @@ GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
+# Буфер для склейки сообщений (chat_id -> список сообщений)
+message_buffer: dict[int, list[str]] = {}
+pending_tasks: dict[int, asyncio.Task] = {}
+
 PROMPT = """Ты эксперт по созданию Anki карточек для медицинских студентов.
 
-Пользователь пришлёт текст с указанием колоды и подколоды.
+Пользователь пришлёт текст. В начале текста могут быть указаны колода и подколода в формате:
+Колода: [название]
+Подколода: [название]
 
-ФОРМАТ ОТВЕТА — верни строго валидный JSON массив карточек:
-[
-  {
-    "question": "Вопрос — широкая тема, объединяющая группу фактов",
-    "answer": "<b>Категория:</b><ul><li><b>Термин</b> — пояснение, цифры</li></ul>"
-  }
-]
+ФОРМАТ КАРТОЧЕК:
+
+Вопрос — широкая тема, объединяющая логически связанную группу фактов. Примеры:
+"Муцинозная цистаденома яичника — характеристика, размеры, риск"
+"Осложнения опухолей яичников — виды, частота, лечение"
+"RMI — формула, компоненты, интерпретация"
+
+Ответ — структурированный HTML с жирными терминами и списками:
+<b>Категория 1:</b>
+<ul>
+<li><b>Термин</b> — пояснение, цифры, механизм</li>
+<li><b>Термин</b> — пояснение, цифры, механизм</li>
+</ul>
+<b>Категория 2:</b>
+<ul>
+<li><b>Термин</b> — пояснение</li>
+</ul>
 
 ПРАВИЛА:
-1. Каждая карточка охватывает логически связанную группу фактов — не один факт
-2. Все цифры, проценты, механизмы должны быть в ответе
-3. Охвати ВЕСЬ текст без исключений
-4. Используй HTML теги: <b>жирный</b>, <ul><li>список</li></ul>
-5. Верни ТОЛЬКО JSON, никакого другого текста
+1. Каждая карточка = логически связанная группа фактов (НЕ один факт на карточку!)
+2. Охвати АБСОЛЮТНО ВЕСЬ текст — ни одна цифра, факт или термин не должен быть пропущен
+3. Все цифры, проценты, критерии, механизмы — обязательно в ответе
+4. Используй ТОЛЬКО HTML теги: <b>, <ul>, <li>
+5. Верни ТОЛЬКО валидный JSON массив, никакого другого текста:
 
-Запрос пользователя:
-"""
+[
+  {
+    "question": "Тема карточки",
+    "answer": "<b>Раздел:</b><ul><li><b>Термин</b> — пояснение</li></ul>"
+  }
+]"""
 
-def parse_deck_name(text: str) -> str:
+def parse_deck_name(text: str) -> tuple[str, str]:
     lines = text.strip().split('\n')
     deck = "Anki"
     subdeck = None
     for line in lines:
-        if line.lower().startswith("колода:"):
-            deck = line.split(":", 1)[1].strip()
-        elif line.lower().startswith("подколода:"):
-            subdeck = line.split(":", 1)[1].strip()
-    if subdeck:
-        return f"{deck}::{subdeck}"
-    return deck
+        stripped = line.strip()
+        if stripped.lower().startswith("колода:"):
+            deck = stripped.split(":", 1)[1].strip()
+        elif stripped.lower().startswith("подколода:"):
+            subdeck = stripped.split(":", 1)[1].strip()
+    full_deck = f"{deck}::{subdeck}" if subdeck else deck
+    return full_deck
 
 def create_apkg(cards: list, deck_name: str) -> str:
     deck_id = random.randrange(1 << 30, 1 << 31)
@@ -54,14 +75,21 @@ def create_apkg(cards: list, deck_name: str) -> str:
 
     anki_model = genanki.Model(
         model_id,
-        "Basic HTML",
+        "Medical Basic",
         fields=[{"name": "Question"}, {"name": "Answer"}],
         templates=[{
             "name": "Card 1",
-            "qfmt": "{{Question}}",
-            "afmt": "{{FrontSide}}<hr id=answer>{{Answer}}",
+            "qfmt": "<div class='question'>{{Question}}</div>",
+            "afmt": "<div class='question'>{{Question}}</div><hr>{{Answer}}",
         }],
-        css=".card { font-family: Arial, sans-serif; font-size: 16px; text-align: left; } b { color: #2c3e50; } ul { margin: 4px 0; padding-left: 20px; } li { margin: 2px 0; }"
+        css="""
+.card { font-family: Arial, sans-serif; font-size: 16px; text-align: left; color: #333; padding: 10px; }
+.question { font-weight: bold; font-size: 17px; color: #1a1a2e; }
+b { color: #2c3e50; }
+ul { margin: 6px 0; padding-left: 20px; }
+li { margin: 3px 0; line-height: 1.5; }
+hr { border: none; border-top: 1px solid #ddd; margin: 10px 0; }
+"""
     )
 
     anki_deck = genanki.Deck(deck_id, deck_name)
@@ -76,26 +104,24 @@ def create_apkg(cards: list, deck_name: str) -> str:
     genanki.Package(anki_deck).write_to_file(tmp.name)
     return tmp.name
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Привет! Отправь текст в формате:\n\n"
-        "Колода: Онкология\n"
-        "Подколода: Рак молочной железы\n\n"
-        "[твой текст для карточек]\n\n"
-        "Я создам .apkg файл — открой его в Anki на телефоне!"
-    )
+async def process_buffered(chat_id: int, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await asyncio.sleep(3)  # Ждём 3 секунды — вдруг ещё сообщения придут
 
-async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_input = update.message.text
-    await update.message.reply_text("⏳ Генерирую карточки...")
+    full_text = "\n".join(message_buffer.pop(chat_id, []))
+    pending_tasks.pop(chat_id, None)
 
-    deck_name = parse_deck_name(user_input)
+    if not full_text.strip():
+        return
+
+    deck_name = parse_deck_name(full_text)
+    await update.message.reply_text(f"⏳ Генерирую карточки для колоды «{deck_name}»...")
 
     try:
         response = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": PROMPT + user_input}],
-            temperature=0.3,
+            messages=[{"role": "user", "content": PROMPT + "\n\nТекст пользователя:\n" + full_text}],
+            temperature=0.2,
+            max_tokens=8000,
         )
         raw = response.choices[0].message.content.strip()
         raw = re.sub(r"```json\s*", "", raw)
@@ -108,7 +134,11 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         apkg_path = create_apkg(cards, deck_name)
-        caption = f"✅ Создано {len(cards)} карточек\nКолода: {deck_name}\n\nОткрой файл в Anki → импортируй → синхронизируй"
+        caption = (
+            f"✅ Создано {len(cards)} карточек\n"
+            f"📚 Колода: {deck_name}\n\n"
+            f"Открой файл в Anki → карточки импортируются автоматически"
+        )
 
         with open(apkg_path, "rb") as f:
             await update.message.reply_document(
@@ -120,9 +150,36 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         os.unlink(apkg_path)
 
     except json.JSONDecodeError as e:
-        await update.message.reply_text(f"❌ Ошибка парсинга: {e}\n\n{raw[:300]}")
+        await update.message.reply_text(f"❌ Ошибка парсинга JSON: {e}\n\n{raw[:400]}")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Привет! Отправь текст в формате:\n\n"
+        "Колода: Онкология\n"
+        "Подколода: Рак молочной железы\n\n"
+        "[твой текст для карточек]\n\n"
+        "Я создам .apkg файл — открой его в Anki на телефоне!\n"
+        "Можно отправлять текст несколькими сообщениями — подожди 3 секунды и всё склеится."
+    )
+
+async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    text = update.message.text
+
+    # Добавляем в буфер
+    if chat_id not in message_buffer:
+        message_buffer[chat_id] = []
+    message_buffer[chat_id].append(text)
+
+    # Отменяем предыдущий таймер если есть
+    if chat_id in pending_tasks:
+        pending_tasks[chat_id].cancel()
+
+    # Запускаем новый таймер
+    task = asyncio.create_task(process_buffered(chat_id, update, context))
+    pending_tasks[chat_id] = task
 
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 app.add_handler(CommandHandler("start", start))
