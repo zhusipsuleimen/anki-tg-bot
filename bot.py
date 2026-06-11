@@ -2,16 +2,18 @@ import os
 import json
 import re
 import tempfile
+import threading
+import time
 import genanki
 import random
 from flask import Flask, request
 import google.generativeai as genai
-from telegram import Update, Bot
+from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "").rstrip("/")
 
 genai.configure(api_key=GEMINI_API_KEY)
 gemini = genai.GenerativeModel("gemini-1.5-flash")
@@ -132,7 +134,6 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
-# Строим приложение
 tg_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 tg_app.add_handler(CommandHandler("start", start))
 tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
@@ -149,13 +150,20 @@ async def webhook():
 def health():
     return "ok"
 
-if __name__ == "__main__":
+def register_webhook():
+    # Ждём пока Flask поднимется, потом регистрируем webhook
+    time.sleep(5)
     import asyncio
-
-    async def setup():
+    async def _set():
         await tg_app.initialize()
-        await tg_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook/{TELEGRAM_TOKEN}")
-        print(f"Webhook установлен: {WEBHOOK_URL}/webhook/{TELEGRAM_TOKEN}")
+        url = f"{WEBHOOK_URL}/webhook/{TELEGRAM_TOKEN}"
+        await tg_app.bot.set_webhook(url)
+        print(f"Webhook установлен: {url}")
+    asyncio.run(_set())
 
-    asyncio.run(setup())
-    flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+if __name__ == "__main__":
+    if WEBHOOK_URL:
+        t = threading.Thread(target=register_webhook, daemon=True)
+        t.start()
+    port = int(os.environ.get("PORT", 5000))
+    flask_app.run(host="0.0.0.0", port=port)
