@@ -7,16 +7,15 @@ import time
 import genanki
 import random
 from flask import Flask, request
-import google.generativeai as genai
+from groq import Groq
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
-GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "").rstrip("/")
 
-genai.configure(api_key=GEMINI_API_KEY)
-gemini = genai.GenerativeModel("gemini-2.0-flash")
+groq_client = Groq(api_key=GROQ_API_KEY)
 
 flask_app = Flask(__name__)
 
@@ -106,8 +105,12 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     deck_name = parse_deck_name(user_input)
 
     try:
-        response = gemini.generate_content(PROMPT + user_input)
-        raw = response.text.strip()
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": PROMPT + user_input}],
+            temperature=0.3,
+        )
+        raw = response.choices[0].message.content.strip()
         raw = re.sub(r"```json\s*", "", raw)
         raw = re.sub(r"```\s*", "", raw)
 
