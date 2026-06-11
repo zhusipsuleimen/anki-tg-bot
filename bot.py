@@ -4,15 +4,19 @@ import re
 import tempfile
 import genanki
 import random
+from flask import Flask, request
 import google.generativeai as genai
-from telegram import Update
+from telegram import Update, Bot
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
 
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash")
+gemini = genai.GenerativeModel("gemini-1.5-flash")
+
+flask_app = Flask(__name__)
 
 PROMPT = """Ты эксперт по созданию Anki карточек для медицинских студентов.
 
@@ -73,7 +77,6 @@ li { margin: 2px 0; }
     )
 
     anki_deck = genanki.Deck(deck_id, deck_name)
-
     for card in cards:
         note = genanki.Note(
             model=anki_model,
@@ -101,10 +104,8 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     deck_name = parse_deck_name(user_input)
 
     try:
-        response = model.generate_content(PROMPT + user_input)
+        response = gemini.generate_content(PROMPT + user_input)
         raw = response.text.strip()
-
-        # Убираем markdown блоки если есть
         raw = re.sub(r"```json\s*", "", raw)
         raw = re.sub(r"```\s*", "", raw)
 
@@ -115,10 +116,14 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         apkg_path = create_apkg(cards, deck_name)
-
         caption = f"✅ Создано {len(cards)} карточек\nКолода: {deck_name}\n\nОткрой файл в Anki → импортируй → синхронизируй"
+
         with open(apkg_path, "rb") as f:
-            await update.message.reply_document(document=f, filename=f"{deck_name.replace('::', '_')}.apkg", caption=caption)
+            await update.message.reply_document(
+                document=f,
+                filename=f"{deck_name.replace('::', '_')}.apkg",
+                caption=caption
+            )
 
         os.unlink(apkg_path)
 
@@ -127,8 +132,30 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
-app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-app.add_handler(CommandHandler("start", start))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-print("Бот запущен...")
-app.run_polling()
+# Строим приложение
+tg_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+tg_app.add_handler(CommandHandler("start", start))
+tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+
+@flask_app.post(f"/webhook/{TELEGRAM_TOKEN}")
+async def webhook():
+    data = request.get_json()
+    update = Update.de_json(data, tg_app.bot)
+    await tg_app.initialize()
+    await tg_app.process_update(update)
+    return "ok"
+
+@flask_app.get("/")
+def health():
+    return "ok"
+
+if __name__ == "__main__":
+    import asyncio
+
+    async def setup():
+        await tg_app.initialize()
+        await tg_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook/{TELEGRAM_TOKEN}")
+        print(f"Webhook установлен: {WEBHOOK_URL}/webhook/{TELEGRAM_TOKEN}")
+
+    asyncio.run(setup())
+    flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
