@@ -150,7 +150,7 @@ async def process_buffered(chat_id: int, update: Update, context: ContextTypes.D
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": PROMPT + "\n\nТекст:\n" + full_text}],
             temperature=0.2,
-            max_tokens=32000,
+            max_tokens=7000,
         )
         raw = response.choices[0].message.content.strip()
         raw = re.sub(r"```json\s*", "", raw)
