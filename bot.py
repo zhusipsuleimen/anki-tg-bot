@@ -16,7 +16,7 @@ GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "").rstrip("/")
 
 genai.configure(api_key=GEMINI_API_KEY)
-gemini = genai.GenerativeModel("gemini-1.5-flash")
+gemini = genai.GenerativeModel("gemini-2.0-flash")
 
 flask_app = Flask(__name__)
 
