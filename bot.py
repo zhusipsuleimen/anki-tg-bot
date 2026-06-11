@@ -2,22 +2,16 @@ import os
 import json
 import re
 import tempfile
-import threading
-import time
 import genanki
 import random
-from flask import Flask, request
 from groq import Groq
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "").rstrip("/")
 
 groq_client = Groq(api_key=GROQ_API_KEY)
-
-flask_app = Flask(__name__)
 
 PROMPT = """Ты эксперт по созданию Anki карточек для медицинских студентов.
 
@@ -27,8 +21,7 @@ PROMPT = """Ты эксперт по созданию Anki карточек дл
 [
   {
     "question": "Вопрос — широкая тема, объединяющая группу фактов",
-    "answer": "<b>Категория:</b><ul><li><b>Термин</b> — пояснение, цифры</li></ul>",
-    "deck": "Онкология::Рак молочной железы"
+    "answer": "<b>Категория:</b><ul><li><b>Термин</b> — пояснение, цифры</li></ul>"
   }
 ]
 
@@ -37,8 +30,7 @@ PROMPT = """Ты эксперт по созданию Anki карточек дл
 2. Все цифры, проценты, механизмы должны быть в ответе
 3. Охвати ВЕСЬ текст без исключений
 4. Используй HTML теги: <b>жирный</b>, <ul><li>список</li></ul>
-5. Поле "deck" — точное название колоды как указал пользователь
-6. Верни ТОЛЬКО JSON, никакого другого текста
+5. Верни ТОЛЬКО JSON, никакого другого текста
 
 Запрос пользователя:
 """
@@ -69,12 +61,7 @@ def create_apkg(cards: list, deck_name: str) -> str:
             "qfmt": "{{Question}}",
             "afmt": "{{FrontSide}}<hr id=answer>{{Answer}}",
         }],
-        css="""
-.card { font-family: Arial, sans-serif; font-size: 16px; text-align: left; }
-b { color: #2c3e50; }
-ul { margin: 4px 0; padding-left: 20px; }
-li { margin: 2px 0; }
-"""
+        css=".card { font-family: Arial, sans-serif; font-size: 16px; text-align: left; } b { color: #2c3e50; } ul { margin: 4px 0; padding-left: 20px; } li { margin: 2px 0; }"
     )
 
     anki_deck = genanki.Deck(deck_id, deck_name)
@@ -133,40 +120,12 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         os.unlink(apkg_path)
 
     except json.JSONDecodeError as e:
-        await update.message.reply_text(f"❌ Ошибка парсинга JSON: {e}\n\nОтвет Gemini:\n{raw[:500]}")
+        await update.message.reply_text(f"❌ Ошибка парсинга: {e}\n\n{raw[:300]}")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
-tg_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-tg_app.add_handler(CommandHandler("start", start))
-tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-
-@flask_app.post(f"/webhook/{TELEGRAM_TOKEN}")
-async def webhook():
-    data = request.get_json()
-    update = Update.de_json(data, tg_app.bot)
-    await tg_app.initialize()
-    await tg_app.process_update(update)
-    return "ok"
-
-@flask_app.get("/")
-def health():
-    return "ok"
-
-def register_webhook():
-    # Ждём пока Flask поднимется, потом регистрируем webhook
-    time.sleep(5)
-    import asyncio
-    async def _set():
-        await tg_app.initialize()
-        url = f"{WEBHOOK_URL}/webhook/{TELEGRAM_TOKEN}"
-        await tg_app.bot.set_webhook(url)
-        print(f"Webhook установлен: {url}")
-    asyncio.run(_set())
-
-if __name__ == "__main__":
-    if WEBHOOK_URL:
-        t = threading.Thread(target=register_webhook, daemon=True)
-        t.start()
-    port = int(os.environ.get("PORT", 5000))
-    flask_app.run(host="0.0.0.0", port=port)
+app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+app.add_handler(CommandHandler("start", start))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+print("Бот запущен...")
+app.run_polling()
