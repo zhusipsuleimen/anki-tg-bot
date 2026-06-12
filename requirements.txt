@@ -1,4 +1,8 @@
 python-telegram-bot==22.7
-groq==1.4.0
+anthropic>=0.40.0
+google-genai>=0.8.0
+groq>=0.11.0
 genanki==0.13.0
-httpx==0.28.1
+pypdf>=4.0.0
+httpx>=0.27.0
+python-dotenv>=1.0.0
