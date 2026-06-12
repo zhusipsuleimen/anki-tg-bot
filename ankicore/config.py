@@ -7,6 +7,12 @@ try:
 except ImportError:
     pass
 
+# Пустой ANTHROPIC_BASE_URL, унаследованный из окружения, сломал бы anthropic SDK
+# (он попытается использовать "" как адрес). Если значение пустое — убираем,
+# чтобы SDK шёл на дефолтный api.anthropic.com.
+if os.environ.get("ANTHROPIC_BASE_URL", "x").strip() == "":
+    os.environ.pop("ANTHROPIC_BASE_URL", None)
+
 
 def _clean(value: str | None) -> str | None:
     if value is None:

@@ -107,14 +107,22 @@ def _claude_generate(parts: list[dict]) -> str:
 
 # --- Gemini ---------------------------------------------------------------
 
-def _gemini_generate(parts: list[dict]) -> str:
+def _gemini_client():
     from google import genai
+
+    # Ключи Vertex AI Express начинаются с "AQ.", ключи AI Studio — с "AIza".
+    if config.GEMINI_API_KEY.startswith("AQ."):
+        return genai.Client(vertexai=True, api_key=config.GEMINI_API_KEY)
+    return genai.Client(api_key=config.GEMINI_API_KEY)
+
+
+def _gemini_generate(parts: list[dict]) -> str:
     from google.genai import types
 
     if not config.GEMINI_API_KEY:
         raise LLMError("Не задан GEMINI_API_KEY")
 
-    client = genai.Client(api_key=config.GEMINI_API_KEY)
+    client = _gemini_client()
 
     contents = []
     for p in parts:

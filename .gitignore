@@ -4,3 +4,4 @@ __pycache__/
 .env
 *.apkg
 .DS_Store
+logs/

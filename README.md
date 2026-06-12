@@ -36,6 +36,9 @@ cp .env.example .env      # затем впиши ключи в .env
 | `GEMINI_API_KEY` | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | хотя бы один из LLM |
 | `GROQ_API_KEY` | [console.groq.com/keys](https://console.groq.com/keys) | только для голосовых |
 
+> Для Gemini бери ключ AI Studio (`AIza…`). Ключ вида `AQ.…` — это Vertex AI
+> Express, для него надо отдельно включить Agent Platform API в Google Cloud.
+
 > **Два бота одновременно = два разных токена.** Telegram разрешает один
 > long-poll на токен, поэтому создай в @BotFather двух ботов и впиши их токены
 > в `TELEGRAM_TOKEN_LOCAL` и `TELEGRAM_TOKEN_CLOUD`. Если запускаешь только один
@@ -64,6 +67,28 @@ cp .env.example .env      # затем впиши ключи в .env
 - Python пинится через `.python-version` (3.12)
 - Задай переменные окружения на платформе: `TELEGRAM_TOKEN_CLOUD`,
   `ANTHROPIC_API_KEY` (и/или `GEMINI_API_KEY`), при желании `GROQ_API_KEY`.
+
+## Автозапуск (macOS launchd)
+
+Оба бота настроены на автозапуск через launchd — они стартуют при входе в
+систему и перезапускаются при падении. Plist-файлы:
+`~/Library/LaunchAgents/com.anki.localbot.plist` и `com.anki.cloudbot.plist`.
+
+```bash
+# статус
+launchctl list | grep anki
+# логи
+tail -f ~/anki-tg-bot/logs/local.log
+tail -f ~/anki-tg-bot/logs/cloud.log
+# остановить / запустить
+launchctl bootout  gui/$(id -u) ~/Library/LaunchAgents/com.anki.localbot.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.anki.localbot.plist
+# применить изменения кода — перезапусти агент (bootout + bootstrap)
+```
+
+> Локальный бот работает, пока Mac включён и Anki открыт. Для настоящего 24/7
+> без Mac — задеплой облачный бот (`bot_cloud.py`) на Railway/Render: код уже
+> готов (`Procfile`, `.python-version`), задай переменные окружения на платформе.
 
 ## Как пользоваться
 
