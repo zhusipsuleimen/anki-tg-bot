@@ -37,7 +37,7 @@ ANTHROPIC_API_KEY = _clean(os.environ.get("ANTHROPIC_API_KEY"))
 ANTHROPIC_MODEL = _clean(os.environ.get("ANTHROPIC_MODEL")) or "claude-haiku-4-5"
 
 GEMINI_API_KEY = _clean(os.environ.get("GEMINI_API_KEY")) or _clean(os.environ.get("GOOGLE_API_KEY"))
-GEMINI_MODEL = _clean(os.environ.get("GEMINI_MODEL")) or "gemini-2.0-flash"
+GEMINI_MODEL = _clean(os.environ.get("GEMINI_MODEL")) or "gemini-2.5-flash"
 
 # --- Голосовые сообщения (транскрипция через Groq Whisper) ----------------
 GROQ_API_KEY = _clean(os.environ.get("GROQ_API_KEY"))

@@ -36,8 +36,7 @@ cp .env.example .env      # затем впиши ключи в .env
 | `GEMINI_API_KEY` | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | хотя бы один из LLM |
 | `GROQ_API_KEY` | [console.groq.com/keys](https://console.groq.com/keys) | только для голосовых |
 
-> Для Gemini бери ключ AI Studio (`AIza…`). Ключ вида `AQ.…` — это Vertex AI
-> Express, для него надо отдельно включить Agent Platform API в Google Cloud.
+> Ключ AI Studio работает в обоих форматах — и классический `AIza…`, и новый `AQ.…`.
 
 > **Два бота одновременно = два разных токена.** Telegram разрешает один
 > long-poll на токен, поэтому создай в @BotFather двух ботов и впиши их токены

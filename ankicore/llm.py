@@ -109,10 +109,7 @@ def _claude_generate(parts: list[dict]) -> str:
 
 def _gemini_client():
     from google import genai
-
-    # Ключи Vertex AI Express начинаются с "AQ.", ключи AI Studio — с "AIza".
-    if config.GEMINI_API_KEY.startswith("AQ."):
-        return genai.Client(vertexai=True, api_key=config.GEMINI_API_KEY)
+    # AI Studio ключи: и классические "AIza…", и новые "AQ.…".
     return genai.Client(api_key=config.GEMINI_API_KEY)
 
 
