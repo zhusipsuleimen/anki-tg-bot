@@ -39,15 +39,22 @@ async def list_decks() -> list[str]:
 
 async def _ensure_model():
     names = await invoke("modelNames")
-    if MODEL_NAME in names:
+    if MODEL_NAME not in names:
+        await invoke(
+            "createModel",
+            modelName=MODEL_NAME,
+            inOrderFields=["Front", "Back"],
+            css=CARD_CSS,
+            isCloze=False,
+            cardTemplates=[{"Name": "Card 1", "Front": QFMT, "Back": AFMT}],
+        )
         return
+    # Модель уже существует — синхронизируем стиль и шаблоны с кодом,
+    # чтобы изменения CSS подхватывались и для ранее созданных карточек.
+    await invoke("updateModelStyling", model={"name": MODEL_NAME, "css": CARD_CSS})
     await invoke(
-        "createModel",
-        modelName=MODEL_NAME,
-        inOrderFields=["Front", "Back"],
-        css=CARD_CSS,
-        isCloze=False,
-        cardTemplates=[{"Name": "Card 1", "Front": QFMT, "Back": AFMT}],
+        "updateModelTemplates",
+        model={"name": MODEL_NAME, "templates": {"Card 1": {"Front": QFMT, "Back": AFMT}}},
     )
 
 
