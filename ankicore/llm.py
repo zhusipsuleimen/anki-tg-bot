@@ -25,14 +25,17 @@ def _extract_json_array(raw: str) -> list[dict]:
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
     text = text.strip()
+    # strict=False разрешает «сырые» переводы строк/табы внутри строк JSON —
+    # Claude часто вставляет их в <pre>-блоки, и строгий парсер бы падал
+    # ("Invalid control character").
     try:
-        data = json.loads(text)
+        data = json.loads(text, strict=False)
     except json.JSONDecodeError:
         start = text.find("[")
         end = text.rfind("]")
         if start == -1 or end == -1 or end <= start:
             raise LLMError(f"Не удалось разобрать JSON из ответа модели:\n{raw[:400]}")
-        data = json.loads(text[start:end + 1])
+        data = json.loads(text[start:end + 1], strict=False)
 
     if isinstance(data, dict):
         # Иногда модель оборачивает в {"cards": [...]}
