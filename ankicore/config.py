@@ -47,7 +47,7 @@ GROQ_WHISPER_MODEL = _clean(os.environ.get("GROQ_WHISPER_MODEL")) or "whisper-la
 ANKICONNECT_URL = _clean(os.environ.get("ANKICONNECT_URL")) or "http://localhost:8765"
 
 # --- Поведение генерации --------------------------------------------------
-MAX_OUTPUT_TOKENS = int(os.environ.get("MAX_OUTPUT_TOKENS", "16000"))
+MAX_OUTPUT_TOKENS = int(os.environ.get("MAX_OUTPUT_TOKENS", "32000"))
 
 # --- Мини-приложение (Telegram Mini App / Web App) ------------------------
 # Порт веб-сервера. Railway/Render задают PORT автоматически.

@@ -12,6 +12,7 @@ let activeTab = 'create';
 let createState = { text: '', deck: '', subdeck: '', model: null, file: null };
 let createView = 'form';      // 'form' | 'editor'
 let editorGen = null;
+let editorHasSource = false;  // есть ли в createState исходник для «переделать»
 
 const ACCEPT = '.pdf,.txt,.md,.doc,.docx,.ppt,.pptx,.xls,.xlsx,image/*';
 
@@ -74,6 +75,12 @@ async function apiForm(path, formData) {
   try { data = await res.json(); } catch {}
   if (!res.ok) throw new Error((data && data.error) || ('Ошибка ' + res.status));
   return data;
+}
+
+// растягивает textarea под содержимое, чтобы был виден весь текст карточки
+function autoGrow(el) {
+  el.style.height = 'auto';
+  el.style.height = (el.scrollHeight + 2) + 'px';
 }
 
 function fmtSize(bytes) {
@@ -159,35 +166,69 @@ function renderCreateForm() {
   document.getElementById('gen-btn').addEventListener('click', doGenerate);
 }
 
+// Один запрос генерации по текущему createState. feedback — необязательная
+// правка от пользователя («переделать с учётом»), добавляется к материалу.
+async function requestGeneration(feedback) {
+  const text = (createState.text || '').trim();
+  const file = createState.file;
+  let material = text;
+  if (feedback && feedback.trim()) {
+    material = (material ? material + '\n\n' : '') +
+      '━━━ УКАЗАНИЕ ПО ПЕРЕДЕЛКЕ (выполни эти правки; факты по-прежнему бери только из материала выше): ' +
+      feedback.trim();
+  }
+  if (file) {
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('deck', createState.deck || '');
+    fd.append('subdeck', createState.subdeck || '');
+    fd.append('model', createState.model || '');
+    fd.append('text', material);
+    return await apiForm('/api/generate_file', fd);
+  }
+  return await api('/api/generate', {
+    method: 'POST',
+    body: { text: material, deck: createState.deck, subdeck: createState.subdeck, model: createState.model },
+  });
+}
+
 async function doGenerate() {
   const text = (createState.text || '').trim();
   const file = createState.file;
   if (!text && !file) { toast('Вставь текст или прикрепи файл'); return; }
   const btn = document.getElementById('gen-btn');
-  btn.disabled = true; btn.textContent = '⏳ Генерирую…';
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Генерирую…'; }
   try {
-    let gen;
-    if (file) {
-      const fd = new FormData();
-      fd.append('file', file);
-      fd.append('deck', createState.deck || '');
-      fd.append('subdeck', createState.subdeck || '');
-      fd.append('model', createState.model || '');
-      fd.append('text', text);
-      gen = await apiForm('/api/generate_file', fd);
-    } else {
-      gen = await api('/api/generate', {
-        method: 'POST',
-        body: { text, deck: createState.deck, subdeck: createState.subdeck, model: createState.model },
-      });
-    }
+    const gen = await requestGeneration(null);
     notify('success');
     if (gen.note) toast(gen.note);
-    editorGen = gen; createView = 'editor';
+    editorGen = gen; createView = 'editor'; editorHasSource = true;
     renderEditor(gen);
   } catch (e) {
     notify('error'); alertMsg(e.message);
-    btn.disabled = false; btn.textContent = '✨ Сгенерировать';
+    if (btn) { btn.disabled = false; btn.textContent = '✨ Сгенерировать'; }
+  }
+}
+
+// Переделать всю партию по тому же материалу + комментарий пользователя.
+async function regenerateWithFeedback() {
+  const fb = document.getElementById('feedback');
+  const note = (fb && fb.value || '').trim();
+  if (!note) { toast('Напиши, что поправить'); return; }
+  const btn = document.getElementById('redo-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Переделываю…'; }
+  const prevId = editorGen && editorGen.id;
+  try {
+    const gen = await requestGeneration(note);
+    // старую версию убираем, чтобы в истории не копились дубли
+    if (prevId && prevId !== gen.id) {
+      try { await api('/api/generations/' + prevId, { method: 'DELETE' }); } catch {}
+    }
+    notify('success'); toast('Готово — карточки переделаны');
+    editorGen = gen; renderEditor(gen);
+  } catch (e) {
+    notify('error'); alertMsg(e.message);
+    if (btn) { btn.disabled = false; btn.textContent = '🔄 Переделать с учётом'; }
   }
 }
 
@@ -198,6 +239,11 @@ function renderEditor(gen) {
     <h1>${esc(gen.deck)}</h1>
     <p class="sub">${cards.length} карточек · отредактируй или удали лишние, затем добавь все.</p>
     <div id="cards"></div>
+    ${editorHasSource ? `<div class="feedback-box">
+      <span class="hint">Не то? Напиши, что поправить — переделаю всю партию по тому же материалу.</span>
+      <textarea id="feedback" placeholder="Напр.: пропустил раздел про стадии · сделай больше карточек · ответы короче"></textarea>
+      <button class="btn secondary small" id="redo-btn" style="margin-top:8px">🔄 Переделать с учётом</button>
+    </div>` : ''}
     <div class="actions">
       <button class="btn secondary" id="back-btn">← Ещё</button>
       <button class="btn" id="send-btn">📎 Добавить все (${cards.length})</button>
@@ -206,6 +252,8 @@ function renderEditor(gen) {
   const list = document.getElementById('cards');
   if (!cards.length) list.innerHTML = emptyBlock('🃏', 'Карточек нет', 'Все удалены — вернись и создай заново.');
   cards.forEach((c, i) => list.appendChild(cardEditEl(c, i)));
+  const redo = document.getElementById('redo-btn');
+  if (redo) redo.addEventListener('click', regenerateWithFeedback);
   document.getElementById('back-btn').addEventListener('click', () => {
     createView = 'form'; renderCreateForm();
   });
@@ -217,9 +265,14 @@ function cardEditEl(c, i) {
   el.className = 'card-edit';
   el.innerHTML = `
     <div class="num"><span>№${i + 1}</span><button class="del">🗑 удалить</button></div>
-    <textarea class="f" rows="2">${esc(c.front)}</textarea>
-    <textarea class="b" rows="3">${esc(c.back)}</textarea>`;
+    <textarea class="f">${esc(c.front)}</textarea>
+    <textarea class="b">${esc(c.back)}</textarea>`;
   const f = el.querySelector('.f'), b = el.querySelector('.b');
+  // развернуть оба поля под полный текст (после вставки в DOM)
+  [f, b].forEach(t => {
+    t.addEventListener('input', () => autoGrow(t));
+    requestAnimationFrame(() => autoGrow(t));
+  });
   const save = async () => {
     const front = f.value.trim(), back = b.value.trim();
     if (!front || !back || (front === c.front && back === c.back)) return;
@@ -321,7 +374,7 @@ function wireHistory() {
 async function openEditor(id) {
   setActiveTab('create');
   view.innerHTML = spinner();
-  try { const gen = await api('/api/generations/' + id); editorGen = gen; createView = 'editor'; renderEditor(gen); }
+  try { const gen = await api('/api/generations/' + id); editorGen = gen; createView = 'editor'; editorHasSource = false; renderEditor(gen); }
   catch (e) { view.innerHTML = errorBlock(e.message); }
 }
 
