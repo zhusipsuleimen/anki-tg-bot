@@ -9,7 +9,33 @@ let CONFIG = null;
 let activeTab = 'create';
 
 // состояние вкладки «Создать»
-let createState = { text: '', deck: '', subdeck: '', model: null, file: null };
+let createState = { text: '', deck: '', subdeck: '', model: null, file: null, instructions: '' };
+
+// быстрые кнопки-инструкции: ярлык → текст, который уходит в модель
+const INSTR_CHIPS = [
+  { label: 'Короче', text: 'Ответы делай короче и лаконичнее.' },
+  { label: 'Больше карточек', text: 'Дроби материал на большее число мелких карточек.' },
+  { label: 'Таблицами', text: 'Где есть сравнение — оформляй ответ таблицей.' },
+  { label: 'Только определения', text: 'Делай карточки в первую очередь по определениям и ключевым терминам.' },
+  { label: 'Цифры жирным', text: 'Все числа, дозы и проценты выделяй жирным.' },
+  { label: 'С примерами', text: 'Где уместно, добавляй краткие примеры из материала.' },
+];
+
+function instrLines() {
+  return (createState.instructions || '').split('\n').map(s => s.trim()).filter(Boolean);
+}
+function hasInstr(text) { return instrLines().includes(text.trim()); }
+function toggleInstr(text) {
+  const t = text.trim();
+  let lines = instrLines();
+  lines = hasInstr(t) ? lines.filter(l => l !== t) : [...lines, t];
+  createState.instructions = lines.join('\n');
+  saveInstructions();
+  renderCreateForm();
+}
+function saveInstructions() {
+  try { localStorage.setItem('anki_instructions', createState.instructions || ''); } catch {}
+}
 let createView = 'form';      // 'form' | 'editor'
 let editorGen = null;
 let editorHasSource = false;  // есть ли в createState исходник для «переделать»
@@ -144,6 +170,11 @@ function renderCreateForm() {
         <div><label>Колода</label><input type="text" id="deck" placeholder="Онкология" value="${esc(createState.deck)}"></div>
         <div><label>Подколода</label><input type="text" id="subdeck" placeholder="РМЖ" value="${esc(createState.subdeck)}"></div>
       </div>
+      <label>Как делать карточки (необязательно · сохраняется)</label>
+      <div class="chips" id="instr-chips">
+        ${INSTR_CHIPS.map(c => `<button type="button" class="chip ${hasInstr(c.text) ? 'active' : ''}" data-text="${esc(c.text)}">${esc(c.label)}</button>`).join('')}
+      </div>
+      <textarea class="instr" id="instructions" placeholder="Напр.: ответы покороче · выделяй цифры жирным · добавь мнемоники">${esc(createState.instructions)}</textarea>
       ${models.length ? `<label>Модель</label><div class="segmented" id="models">
         ${models.map(m => `<div class="seg ${m.id === createState.model ? 'active' : ''}" data-model="${m.id}">${esc(m.label)}<span class="hint">${esc(m.hint)}</span></div>`).join('')}
       </div>` : `<p class="sub" style="color:var(--destructive);margin-top:10px">⚠️ На сервере не задан LLM-ключ.</p>`}
@@ -154,6 +185,10 @@ function renderCreateForm() {
   mat.addEventListener('input', () => createState.text = mat.value);
   document.getElementById('deck').addEventListener('input', e => createState.deck = e.target.value);
   document.getElementById('subdeck').addEventListener('input', e => createState.subdeck = e.target.value);
+  const instr = document.getElementById('instructions');
+  instr.addEventListener('input', () => { createState.instructions = instr.value; saveInstructions(); });
+  document.querySelectorAll('#instr-chips .chip').forEach(ch =>
+    ch.addEventListener('click', () => { haptic(); toggleInstr(ch.dataset.text); }));
   const fileInput = document.getElementById('file');
   fileInput.addEventListener('change', () => { createState.file = fileInput.files[0] || null; haptic(); renderCreateForm(); });
   const fclear = document.getElementById('fclear');
@@ -172,6 +207,11 @@ async function requestGeneration(feedback) {
   const text = (createState.text || '').trim();
   const file = createState.file;
   let material = text;
+  const instr = (createState.instructions || '').trim();
+  if (instr) {
+    material = (material ? material + '\n\n' : '') +
+      '━━━ КАК ДЕЛАТЬ КАРТОЧКИ (указания пользователя по стилю/объёму; факты по-прежнему только из материала): ' + instr;
+  }
   if (feedback && feedback.trim()) {
     material = (material ? material + '\n\n' : '') +
       '━━━ УКАЗАНИЕ ПО ПЕРЕДЕЛКЕ (выполни эти правки; факты по-прежнему бери только из материала выше): ' +
@@ -303,7 +343,7 @@ async function sendApkg(gen) {
     const r = await api('/api/generations/' + gen.id + '/send', { method: 'POST' });
     notify('success');
     alertMsg(`✅ Готово! ${r.count} карточек отправлены файлом .apkg в чат. Открой его в Anki.`);
-    createState = { text: '', deck: '', subdeck: '', model: createState.model, file: null };
+    createState = { text: '', deck: '', subdeck: '', model: createState.model, file: null, instructions: createState.instructions };
     createView = 'form';
     switchTab('history');
   } catch (e) {
@@ -508,6 +548,7 @@ async function boot() {
   }
   document.querySelectorAll('.tab').forEach(b =>
     b.addEventListener('click', () => switchTab(b.dataset.tab)));
+  try { createState.instructions = localStorage.getItem('anki_instructions') || ''; } catch {}
   try { CONFIG = await api('/api/config'); }
   catch { CONFIG = { models: [], default_model: null }; }
   switchTab('create');

@@ -58,6 +58,16 @@ textarea, input[type="text"] {
 }
 textarea:focus, input:focus { outline: 2px solid var(--btn); }
 textarea.material { min-height: 150px; }
+textarea.instr { min-height: 64px; }
+
+/* быстрые кнопки-инструкции на странице «Создать» */
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 8px; }
+.chip {
+  padding: 6px 13px; border-radius: 16px; border: none; cursor: pointer;
+  background: var(--secondary-bg); color: var(--text); font-size: 13px;
+  font-family: inherit;
+}
+.chip.active { background: var(--btn); color: var(--btn-text); }
 
 .row { display: flex; gap: 10px; }
 .row > * { flex: 1; }
