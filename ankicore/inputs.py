@@ -1,6 +1,10 @@
 """Извлечение «частей» ввода из Telegram-сообщения: текст, PDF, фото, голос."""
 import asyncio
 import io
+import os
+import shutil
+import subprocess
+import tempfile
 
 from . import config
 
@@ -57,6 +61,25 @@ def _pptx_fallback(data: bytes) -> str:
             if shape.has_text_frame and shape.text_frame.text.strip():
                 out.append(shape.text_frame.text.strip())
     return "\n".join(out).strip()
+
+
+def _doc_via_textutil(data: bytes) -> str:
+    """Старый .doc → текст через встроенный macOS textutil (нет на Linux)."""
+    if not shutil.which("textutil"):
+        return ""
+    with tempfile.NamedTemporaryFile(suffix=".doc", delete=False) as f:
+        f.write(data)
+        path = f.name
+    try:
+        out = subprocess.run(
+            ["textutil", "-convert", "txt", "-stdout", path],
+            capture_output=True, timeout=30,
+        )
+        return out.stdout.decode("utf-8", errors="replace").strip()
+    except Exception:
+        return ""
+    finally:
+        os.unlink(path)
 
 
 def _office_to_markdown(data: bytes, filename: str) -> str:
@@ -124,9 +147,18 @@ async def extract(update, context) -> tuple[list[dict], str | None, str | None]:
         elif mime.startswith("image/"):
             parts.append({"type": "image", "mime": mime, "data": data})
         elif name.endswith(_OFFICE_EXT) or any(k in mime for k in _OFFICE_MIME):
-            if name.endswith(_OFFICE_LEGACY_EXT) or mime in _OFFICE_LEGACY_MIME:
-                note = ("⚠️ Старый формат .doc/.ppt/.xls не поддерживается напрямую. "
-                        "Сохрани файл как .docx/.pptx/.xlsx и пришли снова.")
+            is_doc = name.endswith(".doc") or mime == "application/msword"
+            is_legacy = name.endswith(_OFFICE_LEGACY_EXT) or mime in _OFFICE_LEGACY_MIME
+            if is_doc:
+                txt = await asyncio.to_thread(_doc_via_textutil, data)
+                if txt:
+                    parts.append({"type": "text", "text": txt})
+                else:
+                    note = ("⚠️ Старый .doc читается только локальным ботом на Mac. "
+                            "Сохрани как .docx и пришли снова.")
+            elif is_legacy:
+                note = ("⚠️ Старый формат .ppt/.xls не поддерживается. "
+                        "Сохрани как .pptx/.xlsx и пришли снова.")
             else:
                 try:
                     md = await asyncio.to_thread(_office_to_markdown, data, name)
