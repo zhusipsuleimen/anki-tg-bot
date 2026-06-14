@@ -63,18 +63,44 @@ def _pptx_fallback(data: bytes) -> str:
     return "\n".join(out).strip()
 
 
-def _doc_via_textutil(data: bytes) -> str:
-    """Старый .doc → текст через встроенный macOS textutil (нет на Linux)."""
-    if not shutil.which("textutil"):
+def _doc_to_text(data: bytes) -> str:
+    """Старый .doc → текст. macOS: textutil; Linux/облако: antiword или catdoc."""
+    tools = []
+    if os.path.exists("/usr/bin/textutil"):  # macOS, абсолютный путь (надёжно под launchd)
+        tools.append(["/usr/bin/textutil", "-convert", "txt", "-stdout"])
+    for t in ("antiword", "catdoc"):          # Linux-извлекатели, если установлены
+        exe = shutil.which(t)
+        if exe:
+            tools.append([exe])
+    if not tools:
         return ""
     with tempfile.NamedTemporaryFile(suffix=".doc", delete=False) as f:
         f.write(data)
         path = f.name
     try:
-        out = subprocess.run(
-            ["textutil", "-convert", "txt", "-stdout", path],
-            capture_output=True, timeout=30,
-        )
+        for cmd in tools:
+            try:
+                out = subprocess.run([*cmd, path], capture_output=True, timeout=30)
+                text = out.stdout.decode("utf-8", errors="replace").strip()
+                if text:
+                    return text
+            except Exception:
+                continue
+        return ""
+    finally:
+        os.unlink(path)
+
+
+def _legacy_ppt(data: bytes) -> str:
+    """Старый .ppt → текст через catppt (пакет catdoc; обычно на Linux/облаке)."""
+    exe = shutil.which("catppt")
+    if not exe:
+        return ""
+    with tempfile.NamedTemporaryFile(suffix=".ppt", delete=False) as f:
+        f.write(data)
+        path = f.name
+    try:
+        out = subprocess.run([exe, path], capture_output=True, timeout=30)
         return out.stdout.decode("utf-8", errors="replace").strip()
     except Exception:
         return ""
@@ -114,8 +140,6 @@ def _office_to_markdown(data: bytes, filename: str) -> str:
 
 _OFFICE_EXT = (".docx", ".pptx", ".xlsx")
 _OFFICE_MIME = ("officedocument", "msword", "ms-powerpoint", "ms-excel")
-_OFFICE_LEGACY_EXT = (".doc", ".ppt", ".xls")
-_OFFICE_LEGACY_MIME = ("application/msword", "application/vnd.ms-powerpoint", "application/vnd.ms-excel")
 
 
 def _transcribe(data: bytes, filename: str) -> str:
@@ -163,14 +187,13 @@ async def extract(update, context) -> tuple[list[dict], str | None, str | None]:
         elif name.endswith(_OFFICE_EXT) or any(k in mime for k in _OFFICE_MIME):
             is_doc = name.endswith(".doc") or mime == "application/msword"
             is_xls = name.endswith(".xls") or mime == "application/vnd.ms-excel"
-            is_legacy = name.endswith(_OFFICE_LEGACY_EXT) or mime in _OFFICE_LEGACY_MIME
+            is_ppt = name.endswith(".ppt") or mime == "application/vnd.ms-powerpoint"
             if is_doc:
-                txt = await asyncio.to_thread(_doc_via_textutil, data)
+                txt = await asyncio.to_thread(_doc_to_text, data)
                 if txt:
                     parts.append({"type": "text", "text": txt})
                 else:
-                    note = ("⚠️ Старый .doc читается только локальным ботом на Mac. "
-                            "Сохрани как .docx и пришли снова.")
+                    note = "⚠️ Не удалось прочитать .doc. Сохрани как .docx и пришли снова."
             elif is_xls:
                 try:
                     txt = await asyncio.to_thread(_xls_to_text, data)
@@ -181,9 +204,12 @@ async def extract(update, context) -> tuple[list[dict], str | None, str | None]:
                     parts.append({"type": "text", "text": txt})
                 elif not note:
                     note = "⚠️ В таблице .xls не найден текст."
-            elif is_legacy:
-                note = ("⚠️ Старый .ppt не поддерживается напрямую. "
-                        "Сохрани как .pptx и пришли снова.")
+            elif is_ppt:
+                txt = await asyncio.to_thread(_legacy_ppt, data)
+                if txt:
+                    parts.append({"type": "text", "text": txt})
+                else:
+                    note = "⚠️ Не удалось прочитать .ppt. Сохрани как .pptx и пришли снова."
             else:
                 try:
                     md = await asyncio.to_thread(_office_to_markdown, data, name)

@@ -1,0 +1,6 @@
+# Конфиг сборки для Railway/Nixpacks (облачный бот на Linux).
+# Лёгкие извлекатели текста для старых форматов Office (~2 МБ вместо
+# 400 МБ LibreOffice): antiword → .doc, catdoc → даёт catppt для .ppt.
+# .xls читается через xlrd (чистый Python, в requirements).
+[phases.setup]
+aptPkgs = ["antiword", "catdoc"]
