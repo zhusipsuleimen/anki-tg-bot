@@ -132,13 +132,16 @@ def _claude_generate(parts: list[dict], model: str | None = None) -> str:
     if not content:
         raise LLMError("Пустой ввод")
 
-    resp = client.messages.create(
+    # Стримим: при большом max_tokens SDK требует streaming (иначе ValueError
+    # про «operations that may take longer than 10 minutes»).
+    with client.messages.stream(
         model=model or config.ANTHROPIC_MODEL,
         max_tokens=config.MAX_OUTPUT_TOKENS,
         system=PROMPT,
         messages=[{"role": "user", "content": content}],
         output_config={"format": CLAUDE_FORMAT},
-    )
+    ) as stream:
+        resp = stream.get_final_message()
     if resp.stop_reason == "max_tokens":
         raise LLMError(TRUNCATED_MSG)
     return "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
