@@ -99,7 +99,7 @@ def _normalize_cards(data: list, deck_hint: str | None) -> list[dict]:
 
 # --- Claude ---------------------------------------------------------------
 
-def _claude_generate(parts: list[dict]) -> str:
+def _claude_generate(parts: list[dict], model: str | None = None) -> str:
     import anthropic
 
     if not config.ANTHROPIC_API_KEY:
@@ -133,7 +133,7 @@ def _claude_generate(parts: list[dict]) -> str:
         raise LLMError("Пустой ввод")
 
     resp = client.messages.create(
-        model=config.ANTHROPIC_MODEL,
+        model=model or config.ANTHROPIC_MODEL,
         max_tokens=config.MAX_OUTPUT_TOKENS,
         system=PROMPT,
         messages=[{"role": "user", "content": content}],
@@ -201,15 +201,19 @@ def _gemini_generate(parts: list[dict]) -> str:
 
 # --- Публичный API --------------------------------------------------------
 
-def generate_cards(parts: list[dict], provider: str, deck_hint: str | None = None) -> list[dict]:
-    """Сгенерировать карточки из частей ввода. Бросает LLMError при проблемах."""
+def generate_cards(parts: list[dict], provider: str, deck_hint: str | None = None,
+                   model: str | None = None) -> list[dict]:
+    """Сгенерировать карточки из частей ввода. Бросает LLMError при проблемах.
+
+    model — конкретная модель Claude (haiku/sonnet); для Gemini игнорируется.
+    """
     provider = config.resolve_provider(provider)
     if provider == "gemini":
         raw = _gemini_generate(parts)
     else:
-        raw = _claude_generate(parts)
+        raw = _claude_generate(parts, model)
 
     cards = _normalize_cards(_extract_json_array(raw), deck_hint)
     if not cards:
-        raise LLMError("Модель не вернула ни одной карточки")
+        raise LLMError("Не нашёл учебного материала для карточек — пришли конспект или текст по теме.")
     return cards

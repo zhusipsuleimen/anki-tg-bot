@@ -37,19 +37,48 @@ def _pdf_to_text(data: bytes) -> str:
         return ""
 
 
+def _docx_fallback(data: bytes) -> str:
+    from docx import Document
+    doc = Document(io.BytesIO(data))
+    out = [p.text for p in doc.paragraphs if p.text.strip()]
+    for table in doc.tables:
+        for row in table.rows:
+            cells = [c.text.strip() for c in row.cells]
+            if any(cells):
+                out.append(" | ".join(cells))
+    return "\n".join(out).strip()
+
+
+def _pptx_fallback(data: bytes) -> str:
+    from pptx import Presentation
+    out = []
+    for slide in Presentation(io.BytesIO(data)).slides:
+        for shape in slide.shapes:
+            if shape.has_text_frame and shape.text_frame.text.strip():
+                out.append(shape.text_frame.text.strip())
+    return "\n".join(out).strip()
+
+
 def _office_to_markdown(data: bytes, filename: str) -> str:
-    """Word / PowerPoint / Excel → markdown через markitdown."""
-    from markitdown import MarkItDown
+    """Word / PowerPoint / Excel → текст. markitdown, с фолбэком на прямые библиотеки."""
     ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     try:
+        from markitdown import MarkItDown
         res = MarkItDown().convert_stream(io.BytesIO(data), file_extension=ext)
-        return (res.text_content or "").strip()
+        text = (res.text_content or "").strip()
     except Exception:
-        return ""
+        text = ""
+    if not text and ext == ".docx":
+        text = _docx_fallback(data)
+    elif not text and ext == ".pptx":
+        text = _pptx_fallback(data)
+    return text
 
 
 _OFFICE_EXT = (".docx", ".pptx", ".xlsx")
 _OFFICE_MIME = ("officedocument", "msword", "ms-powerpoint", "ms-excel")
+_OFFICE_LEGACY_EXT = (".doc", ".ppt", ".xls")
+_OFFICE_LEGACY_MIME = ("application/msword", "application/vnd.ms-powerpoint", "application/vnd.ms-excel")
 
 
 def _transcribe(data: bytes, filename: str) -> str:
@@ -95,11 +124,19 @@ async def extract(update, context) -> tuple[list[dict], str | None, str | None]:
         elif mime.startswith("image/"):
             parts.append({"type": "image", "mime": mime, "data": data})
         elif name.endswith(_OFFICE_EXT) or any(k in mime for k in _OFFICE_MIME):
-            md = await asyncio.to_thread(_office_to_markdown, data, name)
-            if md:
-                parts.append({"type": "text", "text": md})
+            if name.endswith(_OFFICE_LEGACY_EXT) or mime in _OFFICE_LEGACY_MIME:
+                note = ("⚠️ Старый формат .doc/.ppt/.xls не поддерживается напрямую. "
+                        "Сохрани файл как .docx/.pptx/.xlsx и пришли снова.")
             else:
-                note = "⚠️ Не удалось извлечь текст из документа."
+                try:
+                    md = await asyncio.to_thread(_office_to_markdown, data, name)
+                except Exception as e:
+                    md = ""
+                    note = f"⚠️ Не смог обработать «{doc.file_name}»: {e}"
+                if md:
+                    parts.append({"type": "text", "text": md})
+                elif not note:
+                    note = f"⚠️ В «{doc.file_name}» не найден текст (возможно, внутри только картинки/сканы)."
         elif mime.startswith("text/") or name.endswith((".txt", ".md")):
             parts.append({"type": "text", "text": data.decode("utf-8", errors="replace")})
         else:
@@ -117,6 +154,7 @@ async def extract(update, context) -> tuple[list[dict], str | None, str | None]:
                 transcript = await asyncio.to_thread(_transcribe, data, fname)
                 if transcript:
                     parts.append({"type": "text", "text": transcript})
+                    note = f"🎤 Распознал: «{transcript[:300]}»"
                 else:
                     note = "⚠️ Не удалось распознать речь в сообщении."
             except Exception as e:

@@ -37,29 +37,35 @@ class Sink:
         return None
 
 
-def provider_label(provider: str) -> str:
-    provider = config.resolve_provider(provider)
-    if provider == "gemini":
-        return f"Gemini ({config.GEMINI_MODEL})"
-    return f"Claude ({config.ANTHROPIC_MODEL})"
+CLAUDE_MODELS = {"haiku": "claude-haiku-4-5", "sonnet": "claude-sonnet-4-6"}
 
 
 def _current_provider(context) -> str:
     return context.chat_data.get("provider") or config.DEFAULT_PROVIDER
 
 
+def _current_claude_model(context) -> str:
+    return context.chat_data.get("claude_model") or config.ANTHROPIC_MODEL
+
+
+def provider_label(context) -> str:
+    provider = config.resolve_provider(_current_provider(context))
+    if provider == "gemini":
+        return f"Gemini ({config.GEMINI_MODEL})"
+    return f"Claude ({_current_claude_model(context)})"
+
+
 # --- Команды --------------------------------------------------------------
 
 def _make_start(sink: Sink):
     async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        provider = config.resolve_provider(_current_provider(context))
         avail = config.available_providers()
         lines = [
             "👋 Привет! Я делаю Anki-карточки из твоих материалов.",
             "",
             "Пришли мне:",
             "• 📝 текст (можно несколькими сообщениями подряд)",
-            "• 📄 PDF",
+            "• 📄 PDF / Word / PowerPoint / Excel",
             "• 🖼 фото страницы / скриншот",
             "• 🎤 голосовое сообщение",
             "",
@@ -68,10 +74,10 @@ def _make_start(sink: Sink):
             "Подколода: РМЖ",
             "",
             f"📦 Доставка: {sink.label}",
-            f"🤖 Модель: {provider_label(provider)}",
+            f"🤖 Модель: {provider_label(context)}",
         ]
-        if len(avail) > 1:
-            lines.append("Переключить модель: /claude или /gemini")
+        if len(avail) > 1 or config.ANTHROPIC_API_KEY:
+            lines.append("Модель: /gemini · /haiku · /sonnet (умнее, но дороже)")
         if not avail:
             lines.append("\n⚠️ Не задан ни один ключ LLM (ANTHROPIC_API_KEY или GEMINI_API_KEY).")
         ready = await sink.readiness()
@@ -81,7 +87,7 @@ def _make_start(sink: Sink):
     return start
 
 
-def _make_switch(provider_name: str):
+def _make_switch(provider_name: str, claude_model: str | None = None):
     async def switch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if provider_name == "claude" and not config.ANTHROPIC_API_KEY:
             await update.message.reply_text("⚠️ Не задан ANTHROPIC_API_KEY.")
@@ -90,7 +96,9 @@ def _make_switch(provider_name: str):
             await update.message.reply_text("⚠️ Не задан GEMINI_API_KEY.")
             return
         context.chat_data["provider"] = provider_name
-        await update.message.reply_text(f"🤖 Модель переключена: {provider_label(provider_name)}")
+        if claude_model:
+            context.chat_data["claude_model"] = claude_model
+        await update.message.reply_text(f"🤖 Модель переключена: {provider_label(context)}")
     return switch
 
 
@@ -134,11 +142,13 @@ async def _debounced_generate(update, context, sink: Sink):
 
 async def _generate_and_preview(update, context, sink: Sink, parts, deck_hint):
     provider = config.resolve_provider(_current_provider(context))
+    model = _current_claude_model(context) if provider == "claude" else None
+    label = provider_label(context)
     status = await update.effective_chat.send_message("⏳ Генерирую карточки…")
     await update.effective_chat.send_action(ChatAction.TYPING)
 
     try:
-        cards = await asyncio.to_thread(generate_cards, parts, provider, deck_hint)
+        cards = await asyncio.to_thread(generate_cards, parts, provider, deck_hint, model)
     except LLMError as e:
         await status.edit_text(f"❌ {e}")
         return
@@ -148,10 +158,10 @@ async def _generate_and_preview(update, context, sink: Sink, parts, deck_hint):
 
     deck = deck_hint or cards[0]["deck"]
     context.chat_data["pending"] = {
-        "cards": cards, "deck": deck, "parts": parts,
-        "provider": provider, "page": 0, "msg_id": status.message_id,
+        "cards": cards, "deck": deck, "parts": parts, "provider": provider,
+        "model": model, "label": label, "page": 0, "msg_id": status.message_id,
     }
-    text = render_preview(cards, deck, provider_label(provider), 0)
+    text = render_preview(cards, deck, label, 0)
     await status.edit_text(text[:TG_LIMIT], reply_markup=build_keyboard(cards, 0))
 
 
@@ -171,6 +181,8 @@ def _make_on_callback(sink: Sink):
         cards = pending["cards"]
         deck = pending["deck"]
         provider = pending["provider"]
+        model = pending.get("model")
+        label = pending.get("label") or provider_label(context)
 
         if data == "pg:noop":
             return
@@ -180,7 +192,7 @@ def _make_on_callback(sink: Sink):
             page = pending["page"] + (1 if data == "pg:next" else -1)
             page = max(0, min(page, pages - 1))
             pending["page"] = page
-            text = render_preview(cards, deck, provider_label(provider), page)
+            text = render_preview(cards, deck, label, page)
             await query.edit_message_text(text[:TG_LIMIT], reply_markup=build_keyboard(cards, page))
             return
 
@@ -192,13 +204,16 @@ def _make_on_callback(sink: Sink):
         if data == "do:redo":
             await query.edit_message_text("🔄 Переделываю…")
             try:
-                new_cards = await asyncio.to_thread(generate_cards, pending["parts"], provider, deck)
+                new_cards = await asyncio.to_thread(generate_cards, pending["parts"], provider, deck, model)
+            except LLMError as e:
+                await query.edit_message_text(f"❌ {e}")
+                return
             except Exception as e:
                 await query.edit_message_text(f"❌ Ошибка: {e}")
                 return
             pending["cards"] = new_cards
             pending["page"] = 0
-            text = render_preview(new_cards, deck, provider_label(provider), 0)
+            text = render_preview(new_cards, deck, label, 0)
             await query.edit_message_text(text[:TG_LIMIT], reply_markup=build_keyboard(new_cards, 0))
             return
 
@@ -225,8 +240,10 @@ def build_app(token: str, sink: Sink):
         )
     app = ApplicationBuilder().token(token).build()
     app.add_handler(CommandHandler(["start", "help"], _make_start(sink)))
-    app.add_handler(CommandHandler("claude", _make_switch("claude")))
     app.add_handler(CommandHandler("gemini", _make_switch("gemini")))
+    app.add_handler(CommandHandler("claude", _make_switch("claude")))
+    app.add_handler(CommandHandler("haiku", _make_switch("claude", CLAUDE_MODELS["haiku"])))
+    app.add_handler(CommandHandler("sonnet", _make_switch("claude", CLAUDE_MODELS["sonnet"])))
     content = (
         (filters.TEXT & ~filters.COMMAND)
         | filters.PHOTO | filters.VOICE | filters.AUDIO | filters.Document.ALL
