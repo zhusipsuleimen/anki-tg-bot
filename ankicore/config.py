@@ -55,7 +55,20 @@ PORT = int(os.environ.get("PORT", "8080"))
 # Публичный HTTPS-адрес мини-приложения (домен Railway). Нужен, чтобы бот
 # показал кнопку «Открыть» и Telegram смог загрузить веб-апп. Без него бот
 # работает как раньше (только чат), но мини-апп будет недоступен из кнопки.
-WEBAPP_URL = _clean(os.environ.get("WEBAPP_URL"))
+# Telegram принимает только https-ссылки, поэтому если схему забыли указать
+# (или вписали http) — нормализуем к https и убираем хвостовой слэш.
+def _normalize_webapp_url(value: str | None) -> str | None:
+    value = _clean(value)
+    if not value:
+        return None
+    if value.startswith("http://"):
+        value = "https://" + value[len("http://"):]
+    elif not value.startswith("https://"):
+        value = "https://" + value
+    return value.rstrip("/")
+
+
+WEBAPP_URL = _normalize_webapp_url(os.environ.get("WEBAPP_URL"))
 # Путь к файлу базы данных (история генераций, карточки, прогресс повторения).
 # На Railway подключи Volume и укажи путь на нём (например /data/ankicloud.db),
 # иначе база сбрасывается при каждом деплое.
