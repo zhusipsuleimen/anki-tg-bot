@@ -82,6 +82,20 @@ def _doc_via_textutil(data: bytes) -> str:
         os.unlink(path)
 
 
+def _xls_to_text(data: bytes) -> str:
+    """Старый .xls → текст через xlrd (чистый Python, работает везде)."""
+    import xlrd
+    out = []
+    book = xlrd.open_workbook(file_contents=data)
+    for sheet in book.sheets():
+        out.append(f"# {sheet.name}")
+        for r in range(sheet.nrows):
+            row = [str(sheet.cell_value(r, c)).strip() for c in range(sheet.ncols)]
+            if any(row):
+                out.append(" | ".join(row))
+    return "\n".join(out).strip()
+
+
 def _office_to_markdown(data: bytes, filename: str) -> str:
     """Word / PowerPoint / Excel → текст. markitdown, с фолбэком на прямые библиотеки."""
     ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
@@ -148,6 +162,7 @@ async def extract(update, context) -> tuple[list[dict], str | None, str | None]:
             parts.append({"type": "image", "mime": mime, "data": data})
         elif name.endswith(_OFFICE_EXT) or any(k in mime for k in _OFFICE_MIME):
             is_doc = name.endswith(".doc") or mime == "application/msword"
+            is_xls = name.endswith(".xls") or mime == "application/vnd.ms-excel"
             is_legacy = name.endswith(_OFFICE_LEGACY_EXT) or mime in _OFFICE_LEGACY_MIME
             if is_doc:
                 txt = await asyncio.to_thread(_doc_via_textutil, data)
@@ -156,9 +171,19 @@ async def extract(update, context) -> tuple[list[dict], str | None, str | None]:
                 else:
                     note = ("⚠️ Старый .doc читается только локальным ботом на Mac. "
                             "Сохрани как .docx и пришли снова.")
+            elif is_xls:
+                try:
+                    txt = await asyncio.to_thread(_xls_to_text, data)
+                except Exception as e:
+                    txt = ""
+                    note = f"⚠️ Не смог прочитать .xls: {e}"
+                if txt:
+                    parts.append({"type": "text", "text": txt})
+                elif not note:
+                    note = "⚠️ В таблице .xls не найден текст."
             elif is_legacy:
-                note = ("⚠️ Старый формат .ppt/.xls не поддерживается. "
-                        "Сохрани как .pptx/.xlsx и пришли снова.")
+                note = ("⚠️ Старый .ppt не поддерживается напрямую. "
+                        "Сохрани как .pptx и пришли снова.")
             else:
                 try:
                     md = await asyncio.to_thread(_office_to_markdown, data, name)
