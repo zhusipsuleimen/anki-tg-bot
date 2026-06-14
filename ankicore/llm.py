@@ -18,6 +18,39 @@ class LLMError(Exception):
     pass
 
 
+TRUNCATED_MSG = (
+    "Материал слишком большой — ответ обрезался по лимиту токенов. "
+    "Пришли его меньшими частями (например, по разделам)."
+)
+
+# JSON-схема карточек. Заставляет модель возвращать строго валидный JSON
+# (никаких «сырых» переводов строк, оборванных кавычек, markdown-обёрток).
+_CARD_PROPS = {
+    "front": {"type": "string"},
+    "back": {"type": "string"},
+    "deck": {"type": "string"},
+}
+CLAUDE_FORMAT = {
+    "type": "json_schema",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "cards": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": _CARD_PROPS,
+                    "required": ["front", "back", "deck"],
+                    "additionalProperties": False,
+                },
+            }
+        },
+        "required": ["cards"],
+        "additionalProperties": False,
+    },
+}
+
+
 # --- Парсинг ответа -------------------------------------------------------
 
 def _extract_json_array(raw: str) -> list[dict]:
@@ -104,7 +137,10 @@ def _claude_generate(parts: list[dict]) -> str:
         max_tokens=config.MAX_OUTPUT_TOKENS,
         system=PROMPT,
         messages=[{"role": "user", "content": content}],
+        output_config={"format": CLAUDE_FORMAT},
     )
+    if resp.stop_reason == "max_tokens":
+        raise LLMError(TRUNCATED_MSG)
     return "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
 
 
@@ -135,15 +171,31 @@ def _gemini_generate(parts: list[dict]) -> str:
     if not contents:
         raise LLMError("Пустой ввод")
 
+    schema = types.Schema(
+        type=types.Type.ARRAY,
+        items=types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "front": types.Schema(type=types.Type.STRING),
+                "back": types.Schema(type=types.Type.STRING),
+                "deck": types.Schema(type=types.Type.STRING),
+            },
+            required=["front", "back", "deck"],
+        ),
+    )
     resp = client.models.generate_content(
         model=config.GEMINI_MODEL,
         contents=contents,
         config=types.GenerateContentConfig(
             system_instruction=PROMPT,
             response_mime_type="application/json",
+            response_schema=schema,
             max_output_tokens=config.MAX_OUTPUT_TOKENS,
         ),
     )
+    cand = (resp.candidates or [None])[0]
+    if cand is not None and getattr(getattr(cand, "finish_reason", None), "name", "") == "MAX_TOKENS":
+        raise LLMError(TRUNCATED_MSG)
     return resp.text or ""
 
 

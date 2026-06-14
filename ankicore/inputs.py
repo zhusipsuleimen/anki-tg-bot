@@ -37,6 +37,21 @@ def _pdf_to_text(data: bytes) -> str:
         return ""
 
 
+def _office_to_markdown(data: bytes, filename: str) -> str:
+    """Word / PowerPoint / Excel → markdown через markitdown."""
+    from markitdown import MarkItDown
+    ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    try:
+        res = MarkItDown().convert_stream(io.BytesIO(data), file_extension=ext)
+        return (res.text_content or "").strip()
+    except Exception:
+        return ""
+
+
+_OFFICE_EXT = (".docx", ".pptx", ".xlsx")
+_OFFICE_MIME = ("officedocument", "msword", "ms-powerpoint", "ms-excel")
+
+
 def _transcribe(data: bytes, filename: str) -> str:
     from groq import Groq
     client = Groq(api_key=config.GROQ_API_KEY)
@@ -79,6 +94,12 @@ async def extract(update, context) -> tuple[list[dict], str | None, str | None]:
                 parts.append({"type": "pdf", "data": data})  # вероятно скан → мультимодал
         elif mime.startswith("image/"):
             parts.append({"type": "image", "mime": mime, "data": data})
+        elif name.endswith(_OFFICE_EXT) or any(k in mime for k in _OFFICE_MIME):
+            md = await asyncio.to_thread(_office_to_markdown, data, name)
+            if md:
+                parts.append({"type": "text", "text": md})
+            else:
+                note = "⚠️ Не удалось извлечь текст из документа."
         elif mime.startswith("text/") or name.endswith((".txt", ".md")):
             parts.append({"type": "text", "text": data.decode("utf-8", errors="replace")})
         else:

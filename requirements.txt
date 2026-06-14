@@ -4,5 +4,6 @@ google-genai>=0.8.0
 groq>=0.11.0
 genanki==0.13.0
 pypdf>=4.0.0
+markitdown[docx,pptx,xlsx]>=0.1.0
 httpx>=0.27.0
 python-dotenv>=1.0.0
