@@ -5,3 +5,6 @@ __pycache__/
 *.apkg
 .DS_Store
 logs/
+*.db
+*.db-wal
+*.db-shm

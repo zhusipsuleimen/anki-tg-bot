@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>AnkiCloud</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main id="view"><!-- наполняется из app.js --></main>
+
+  <nav class="tabbar">
+    <button class="tab" data-tab="create">
+      <span class="ico">✍️</span><span>Создать</span>
+    </button>
+    <button class="tab" data-tab="study">
+      <span class="ico">🔁</span><span>Повторять</span>
+    </button>
+    <button class="tab" data-tab="history">
+      <span class="ico">🗂</span><span>История</span>
+    </button>
+  </nav>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

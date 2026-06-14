@@ -5,7 +5,9 @@
 """
 import asyncio
 
-from telegram import Update
+from telegram import (
+    InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo,
+)
 from telegram.constants import ChatAction
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
@@ -48,11 +50,28 @@ def _current_claude_model(context) -> str:
     return context.chat_data.get("claude_model") or config.ANTHROPIC_MODEL
 
 
+def provider_label_for(provider: str, model: str | None) -> str:
+    """Человекочитаемая подпись модели по провайдеру/модели (без context)."""
+    if provider == "gemini":
+        return f"Gemini ({config.GEMINI_MODEL})"
+    return f"Claude ({model or config.ANTHROPIC_MODEL})"
+
+
 def provider_label(context) -> str:
     provider = config.resolve_provider(_current_provider(context))
     if provider == "gemini":
-        return f"Gemini ({config.GEMINI_MODEL})"
-    return f"Claude ({_current_claude_model(context)})"
+        return provider_label_for("gemini", None)
+    return provider_label_for("claude", _current_claude_model(context))
+
+
+def _webapp_keyboard() -> InlineKeyboardMarkup | None:
+    """Кнопка, открывающая мини-приложение (если задан WEBAPP_URL)."""
+    if not config.WEBAPP_URL:
+        return None
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("🪄 Открыть мини-приложение",
+                               web_app=WebAppInfo(url=config.WEBAPP_URL))]]
+    )
 
 
 # --- Команды --------------------------------------------------------------
@@ -83,8 +102,22 @@ def _make_start(sink: Sink):
         ready = await sink.readiness()
         if ready:
             lines.append("\n" + ready)
-        await update.message.reply_text("\n".join(lines))
+        kb = _webapp_keyboard()
+        if kb:
+            lines.append("\n🪄 Или открой мини-приложение — там можно создавать, "
+                         "редактировать и повторять карточки. Кнопка ниже или /app.")
+        await update.message.reply_text("\n".join(lines), reply_markup=kb)
     return start
+
+
+async def open_app(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kb = _webapp_keyboard()
+    if not kb:
+        await update.message.reply_text(
+            "Мини-приложение пока не настроено (не задан WEBAPP_URL на сервере)."
+        )
+        return
+    await update.message.reply_text("Открой мини-приложение 👇", reply_markup=kb)
 
 
 def _make_switch(provider_name: str, claude_model: str | None = None):
@@ -240,6 +273,7 @@ def build_app(token: str, sink: Sink):
         )
     app = ApplicationBuilder().token(token).build()
     app.add_handler(CommandHandler(["start", "help"], _make_start(sink)))
+    app.add_handler(CommandHandler("app", open_app))
     app.add_handler(CommandHandler("gemini", _make_switch("gemini")))
     app.add_handler(CommandHandler("claude", _make_switch("claude")))
     app.add_handler(CommandHandler("haiku", _make_switch("claude", CLAUDE_MODELS["haiku"])))

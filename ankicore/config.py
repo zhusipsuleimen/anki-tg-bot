@@ -49,6 +49,18 @@ ANKICONNECT_URL = _clean(os.environ.get("ANKICONNECT_URL")) or "http://localhost
 # --- Поведение генерации --------------------------------------------------
 MAX_OUTPUT_TOKENS = int(os.environ.get("MAX_OUTPUT_TOKENS", "16000"))
 
+# --- Мини-приложение (Telegram Mini App / Web App) ------------------------
+# Порт веб-сервера. Railway/Render задают PORT автоматически.
+PORT = int(os.environ.get("PORT", "8080"))
+# Публичный HTTPS-адрес мини-приложения (домен Railway). Нужен, чтобы бот
+# показал кнопку «Открыть» и Telegram смог загрузить веб-апп. Без него бот
+# работает как раньше (только чат), но мини-апп будет недоступен из кнопки.
+WEBAPP_URL = _clean(os.environ.get("WEBAPP_URL"))
+# Путь к файлу базы данных (история генераций, карточки, прогресс повторения).
+# На Railway подключи Volume и укажи путь на нём (например /data/ankicloud.db),
+# иначе база сбрасывается при каждом деплое.
+DB_PATH = _clean(os.environ.get("ANKI_DB_PATH")) or "ankicloud.db"
+
 
 def available_providers() -> list[str]:
     providers = []

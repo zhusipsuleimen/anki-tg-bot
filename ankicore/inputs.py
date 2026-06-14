@@ -139,7 +139,86 @@ def _office_to_markdown(data: bytes, filename: str) -> str:
 
 
 _OFFICE_EXT = (".docx", ".pptx", ".xlsx")
+_LEGACY_OFFICE_EXT = (".doc", ".ppt", ".xls")
 _OFFICE_MIME = ("officedocument", "msword", "ms-powerpoint", "ms-excel")
+_IMAGE_EXT = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".heic", ".heif")
+
+
+def _guess_image_mime(name: str) -> str:
+    name = name.lower()
+    if name.endswith(".png"):
+        return "image/png"
+    if name.endswith(".webp"):
+        return "image/webp"
+    if name.endswith(".gif"):
+        return "image/gif"
+    if name.endswith((".heic", ".heif")):
+        return "image/heic"
+    return "image/jpeg"
+
+
+async def file_to_parts(data: bytes, filename: str, mime: str) -> tuple[list[dict], str | None]:
+    """Один файл (bytes + имя + mime) → (parts, note).
+
+    Общая логика для Telegram-документов и загрузок из мини-приложения:
+    PDF / фото / Word / PowerPoint / Excel (в т.ч. старые .doc/.ppt/.xls) / txt.
+    """
+    mime = (mime or "").lower()
+    name = (filename or "").lower()
+    parts: list[dict] = []
+    note: str | None = None
+
+    if mime == "application/pdf" or name.endswith(".pdf"):
+        extracted = _pdf_to_text(data)
+        if len(extracted) > 200:
+            parts.append({"type": "text", "text": extracted})
+        else:
+            parts.append({"type": "pdf", "data": data})  # вероятно скан → мультимодал
+    elif mime.startswith("image/") or name.endswith(_IMAGE_EXT):
+        img_mime = mime if mime.startswith("image/") else _guess_image_mime(name)
+        parts.append({"type": "image", "mime": img_mime, "data": data})
+    elif name.endswith(_OFFICE_EXT) or name.endswith(_LEGACY_OFFICE_EXT) or any(k in mime for k in _OFFICE_MIME):
+        is_doc = name.endswith(".doc") or mime == "application/msword"
+        is_xls = name.endswith(".xls") or mime == "application/vnd.ms-excel"
+        is_ppt = name.endswith(".ppt") or mime == "application/vnd.ms-powerpoint"
+        if is_doc:
+            txt = await asyncio.to_thread(_doc_to_text, data)
+            if txt:
+                parts.append({"type": "text", "text": txt})
+            else:
+                note = "⚠️ Не удалось прочитать .doc. Сохрани как .docx и пришли снова."
+        elif is_xls:
+            try:
+                txt = await asyncio.to_thread(_xls_to_text, data)
+            except Exception as e:
+                txt = ""
+                note = f"⚠️ Не смог прочитать .xls: {e}"
+            if txt:
+                parts.append({"type": "text", "text": txt})
+            elif not note:
+                note = "⚠️ В таблице .xls не найден текст."
+        elif is_ppt:
+            txt = await asyncio.to_thread(_legacy_ppt, data)
+            if txt:
+                parts.append({"type": "text", "text": txt})
+            else:
+                note = "⚠️ Не удалось прочитать .ppt. Сохрани как .pptx и пришли снова."
+        else:
+            try:
+                md = await asyncio.to_thread(_office_to_markdown, data, name)
+            except Exception as e:
+                md = ""
+                note = f"⚠️ Не смог обработать «{filename}»: {e}"
+            if md:
+                parts.append({"type": "text", "text": md})
+            elif not note:
+                note = f"⚠️ В «{filename}» не найден текст (возможно, внутри только картинки/сканы)."
+    elif mime.startswith("text/") or name.endswith((".txt", ".md")):
+        parts.append({"type": "text", "text": data.decode("utf-8", errors="replace")})
+    else:
+        note = f"⚠️ Формат {mime or name or 'файла'} не поддерживается — пропущен."
+
+    return parts, note
 
 
 def _transcribe(data: bytes, filename: str) -> str:
@@ -170,60 +249,14 @@ async def extract(update, context) -> tuple[list[dict], str | None, str | None]:
         data = await _download(context, msg.photo[-1].file_id)
         parts.append({"type": "image", "mime": "image/jpeg", "data": data})
 
-    # --- Документ (PDF / txt / картинка) ---
+    # --- Документ (PDF / txt / картинка / Office) ---
     if msg.document:
         doc = msg.document
-        mime = (doc.mime_type or "").lower()
-        name = (doc.file_name or "").lower()
         data = await _download(context, doc.file_id)
-        if mime == "application/pdf" or name.endswith(".pdf"):
-            extracted = _pdf_to_text(data)
-            if len(extracted) > 200:
-                parts.append({"type": "text", "text": extracted})
-            else:
-                parts.append({"type": "pdf", "data": data})  # вероятно скан → мультимодал
-        elif mime.startswith("image/"):
-            parts.append({"type": "image", "mime": mime, "data": data})
-        elif name.endswith(_OFFICE_EXT) or any(k in mime for k in _OFFICE_MIME):
-            is_doc = name.endswith(".doc") or mime == "application/msword"
-            is_xls = name.endswith(".xls") or mime == "application/vnd.ms-excel"
-            is_ppt = name.endswith(".ppt") or mime == "application/vnd.ms-powerpoint"
-            if is_doc:
-                txt = await asyncio.to_thread(_doc_to_text, data)
-                if txt:
-                    parts.append({"type": "text", "text": txt})
-                else:
-                    note = "⚠️ Не удалось прочитать .doc. Сохрани как .docx и пришли снова."
-            elif is_xls:
-                try:
-                    txt = await asyncio.to_thread(_xls_to_text, data)
-                except Exception as e:
-                    txt = ""
-                    note = f"⚠️ Не смог прочитать .xls: {e}"
-                if txt:
-                    parts.append({"type": "text", "text": txt})
-                elif not note:
-                    note = "⚠️ В таблице .xls не найден текст."
-            elif is_ppt:
-                txt = await asyncio.to_thread(_legacy_ppt, data)
-                if txt:
-                    parts.append({"type": "text", "text": txt})
-                else:
-                    note = "⚠️ Не удалось прочитать .ppt. Сохрани как .pptx и пришли снова."
-            else:
-                try:
-                    md = await asyncio.to_thread(_office_to_markdown, data, name)
-                except Exception as e:
-                    md = ""
-                    note = f"⚠️ Не смог обработать «{doc.file_name}»: {e}"
-                if md:
-                    parts.append({"type": "text", "text": md})
-                elif not note:
-                    note = f"⚠️ В «{doc.file_name}» не найден текст (возможно, внутри только картинки/сканы)."
-        elif mime.startswith("text/") or name.endswith((".txt", ".md")):
-            parts.append({"type": "text", "text": data.decode("utf-8", errors="replace")})
-        else:
-            note = f"⚠️ Формат {mime or name or 'файла'} не поддерживается — пропущен."
+        d_parts, d_note = await file_to_parts(data, doc.file_name or "", doc.mime_type or "")
+        parts.extend(d_parts)
+        if d_note:
+            note = d_note
 
     # --- Голос / аудио ---
     if msg.voice or msg.audio:
