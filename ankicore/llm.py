@@ -9,6 +9,7 @@
 import base64
 import json
 import re
+import time
 
 from . import config
 from .prompt import PROMPT
@@ -16,6 +17,20 @@ from .prompt import PROMPT
 
 class LLMError(Exception):
     pass
+
+
+# Признаки временной перегрузки провайдера — на них повторяем запрос.
+_RETRYABLE = ("503", "unavailable", "overloaded", "429", "resource_exhausted",
+              "high demand", "try again")
+_OVERLOADED_MSG = (
+    "Модель сейчас перегружена (временный всплеск спроса). Попробуй ещё раз "
+    "через минуту или переключи модель в выборе выше."
+)
+
+
+def _is_retryable(err: Exception) -> bool:
+    msg = str(err).lower()
+    return any(s in msg for s in _RETRYABLE)
 
 
 TRUNCATED_MSG = (
@@ -204,6 +219,31 @@ def _gemini_generate(parts: list[dict]) -> str:
 
 # --- Публичный API --------------------------------------------------------
 
+# Паузы между повторами при временной перегрузке провайдера (сек).
+_RETRY_DELAYS = (2, 5, 10)
+
+
+def _generate_with_retry(call):
+    """Вызвать генерацию с повтором при временной перегрузке (503/429/overloaded).
+
+    Наши собственные LLMError (нет ключа, пустой ввод, обрезка) не повторяем.
+    Если все попытки упёрлись в перегрузку — отдаём понятное сообщение.
+    """
+    last = None
+    for delay in (0, *_RETRY_DELAYS):
+        if delay:
+            time.sleep(delay)
+        try:
+            return call()
+        except LLMError:
+            raise
+        except Exception as e:  # ошибки SDK провайдера
+            last = e
+            if not _is_retryable(e):
+                raise LLMError(f"ошибка генерации: {e}")
+    raise LLMError(_OVERLOADED_MSG) from last
+
+
 def generate_cards(parts: list[dict], provider: str, deck_hint: str | None = None,
                    model: str | None = None) -> list[dict]:
     """Сгенерировать карточки из частей ввода. Бросает LLMError при проблемах.
@@ -212,9 +252,9 @@ def generate_cards(parts: list[dict], provider: str, deck_hint: str | None = Non
     """
     provider = config.resolve_provider(provider)
     if provider == "gemini":
-        raw = _gemini_generate(parts)
+        raw = _generate_with_retry(lambda: _gemini_generate(parts))
     else:
-        raw = _claude_generate(parts, model)
+        raw = _generate_with_retry(lambda: _claude_generate(parts, model))
 
     cards = _normalize_cards(_extract_json_array(raw), deck_hint)
     if not cards:
